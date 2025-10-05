@@ -4,3 +4,10 @@ solders>=0.23.0,<0.24.0
 requests
 python-dotenv
 flask
+httpx==0.25.2
+gunicorn
+base58
+
+
+
+
