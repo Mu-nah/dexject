@@ -8,7 +8,7 @@ from solana.rpc.types import TxOpts
 from solders.keypair import Keypair
 from solders.transaction import Transaction
 from base58 import b58decode
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 load_dotenv()
 
@@ -19,9 +19,8 @@ SOLANA_RPC = os.getenv("SOLANA_RPC", "https://api.devnet.solana.com")
 SOLANA_KEYPAIR_JSON_PATH = os.getenv("SOLANA_KEYPAIR_JSON_PATH")
 TRADE_SOL_AMOUNT = float(os.getenv("TRADE_SOL_AMOUNT", "0.01"))
 
-# TP/SL configs
-TP_PCT = float(os.getenv("TAKE_PROFIT_PCT", "50"))   # 50% TP
-SL_PCT = float(os.getenv("STOP_LOSS_PCT", "5"))      # 5% SL
+TP_PCT = float(os.getenv("TAKE_PROFIT_PCT", "50"))
+SL_PCT = float(os.getenv("STOP_LOSS_PCT", "5"))
 CHECK_INTERVAL = int(os.getenv("PRICE_CHECK_INTERVAL", "30"))
 TRAILING_SL_PCT = float(os.getenv("TRAILING_STOP_PCT", "10"))
 TRADE_TIMEOUT = 300  # 5 minutes
@@ -31,12 +30,11 @@ JUPITER_QUOTE_API = "https://quote-api.jup.ag/v6/quote"
 JUPITER_SWAP_API = "https://quote-api.jup.ag/v6/swap"
 DEXSCREENER_TOKEN = "https://api.dexscreener.com/latest/dex/tokens/"
 
-# --- Regex ---
-# Accept CA with or without "pump"
-CA_REGEX = re.compile(r"(?:CA|Contract)[:\s>]*([1-9A-HJ-NP-Za-km-z]{32,50})", re.IGNORECASE)
+# --- Regex (handles Contract inline or on newline) ---
+CA_REGEX = re.compile(r"Contract:\s*\n?\s*([A-Za-z0-9]{32,44})", re.IGNORECASE)
 SYMBOL_REGEX = re.compile(r"\$([A-Za-z0-9_-]{1,20})")
 
-# --- Globals for trade tracking ---
+# --- Globals ---
 trade_logs = []
 total_pnl_sol = 0.0
 win_count = 0
@@ -50,7 +48,6 @@ def load_keypair(path):
 keypair = load_keypair(SOLANA_KEYPAIR_JSON_PATH)
 sol_client = SolanaClient(SOLANA_RPC)
 
-# --- Wallet balance ---
 def get_wallet_balance():
     try:
         bal = sol_client.get_balance(keypair.pubkey())
@@ -61,21 +58,12 @@ def get_wallet_balance():
 # --- Jupiter swap ---
 def jupiter_swap(input_mint, output_mint, amount, symbol, action="BUY"):
     try:
-        params = {
-            "inputMint": input_mint,
-            "outputMint": output_mint,
-            "amount": int(amount),
-            "slippageBps": 200
-        }
+        params = {"inputMint": input_mint, "outputMint": output_mint, "amount": int(amount), "slippageBps": 200}
         route = requests.get(JUPITER_QUOTE_API, params=params, timeout=10).json()
         if "data" not in route or not route["data"]:
             return None, f"No route for {symbol} {action}"
 
-        swap_req = {
-            "route": route["data"][0],
-            "userPublicKey": str(keypair.pubkey()),
-            "wrapUnwrapSOL": True
-        }
+        swap_req = {"route": route["data"][0], "userPublicKey": str(keypair.pubkey()), "wrapUnwrapSOL": True}
         swap_tx = requests.post(JUPITER_SWAP_API, json=swap_req, timeout=10).json()
         if "swapTransaction" not in swap_tx:
             return None, f"Swap tx error {swap_tx}"
@@ -116,7 +104,7 @@ def monitor_trade(ca, symbol, entry_price, amount_in_lamports, app: Application)
                 reason = f"⌛ Timeout expired, selling {symbol}"
 
             if reason:
-                txid, msg = jupiter_swap(ca, SOL_MINT, amount_in_lamports, symbol, "SELL")
+                txid, _ = jupiter_swap(ca, SOL_MINT, amount_in_lamports, symbol, "SELL")
                 exit_price = price
                 pnl_pct = (exit_price - entry_price) / entry_price * 100
                 profit_in_sol = TRADE_SOL_AMOUNT * pnl_pct / 100
@@ -125,6 +113,16 @@ def monitor_trade(ca, symbol, entry_price, amount_in_lamports, app: Application)
                     win_count += 1
                 else:
                     loss_count += 1
+
+                trade_logs.append({
+                    "symbol": symbol,
+                    "entry_price": entry_price,
+                    "exit_price": exit_price,
+                    "pnl_pct": pnl_pct,
+                    "profit_in_sol": profit_in_sol,
+                    "reason": reason,
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                })
 
                 exit_msg = (
                     f"✅ Trade closed: ${symbol}\n"
@@ -136,10 +134,8 @@ def monitor_trade(ca, symbol, entry_price, amount_in_lamports, app: Application)
                 )
                 app.create_task(app.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=exit_msg))
                 break
-
-        except Exception:
-            pass  # silent fail, just retry
-
+        except:
+            pass
         time.sleep(CHECK_INTERVAL)
 
 # --- Telegram handler ---
@@ -166,18 +162,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 args=(ca, symbol, entry_price, lamports, context.application),
                 daemon=True
             ).start()
-        except Exception as e:
-            await update.message.reply_text(f"Could not fetch entry price for {symbol}: {e}")
+        except:
+            await update.message.reply_text(f"Could not fetch entry price for {symbol}")
 
 # --- Main ---
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # Run Telegram bot in a thread
     threading.Thread(target=lambda: app.run_polling(timeout=10, poll_interval=2), daemon=True).start()
 
-    # Dummy Flask server for Render healthcheck
     server = Flask(__name__)
 
     @server.route("/")
