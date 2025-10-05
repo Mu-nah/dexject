@@ -1,9 +1,9 @@
 flask
-httpx==0.24.1
+solana==0.32.0
 python-telegram-bot==20.6
+httpx==0.25.2
 requests
 solders
-solana
 python-dotenv
 gunicorn
 base58
