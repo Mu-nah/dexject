@@ -20,8 +20,8 @@ SOLANA_KEYPAIR_JSON_PATH = os.getenv("SOLANA_KEYPAIR_JSON_PATH")
 TRADE_SOL_AMOUNT = float(os.getenv("TRADE_SOL_AMOUNT", "0.01"))
 
 # TP/SL configs
-TP_PCT = float(os.getenv("TAKE_PROFIT_PCT", "50"))
-SL_PCT = float(os.getenv("STOP_LOSS_PCT", "5"))
+TP_PCT = float(os.getenv("TAKE_PROFIT_PCT", "50"))   # 50% TP
+SL_PCT = float(os.getenv("STOP_LOSS_PCT", "5"))      # 5% SL
 CHECK_INTERVAL = int(os.getenv("PRICE_CHECK_INTERVAL", "30"))
 TRAILING_SL_PCT = float(os.getenv("TRAILING_STOP_PCT", "10"))
 TRADE_TIMEOUT = 300  # 5 minutes
@@ -32,10 +32,11 @@ JUPITER_SWAP_API = "https://quote-api.jup.ag/v6/swap"
 DEXSCREENER_TOKEN = "https://api.dexscreener.com/latest/dex/tokens/"
 
 # --- Regex ---
-CA_REGEX = re.compile(r"(?:CA|Contract)[:\s>]*([1-9A-HJ-NP-Za-km-z]{32,44})(?:pump)?", re.IGNORECASE)
+# Accept CA with or without "pump"
+CA_REGEX = re.compile(r"(?:CA|Contract)[:\s>]*([1-9A-HJ-NP-Za-km-z]{32,50})", re.IGNORECASE)
 SYMBOL_REGEX = re.compile(r"\$([A-Za-z0-9_-]{1,20})")
 
-# --- Globals ---
+# --- Globals for trade tracking ---
 trade_logs = []
 total_pnl_sol = 0.0
 win_count = 0
@@ -125,16 +126,6 @@ def monitor_trade(ca, symbol, entry_price, amount_in_lamports, app: Application)
                 else:
                     loss_count += 1
 
-                trade_logs.append({
-                    "symbol": symbol,
-                    "entry_price": entry_price,
-                    "exit_price": exit_price,
-                    "pnl_pct": pnl_pct,
-                    "profit_in_sol": profit_in_sol,
-                    "reason": reason,
-                    "timestamp": datetime.now(timezone.utc).isoformat()
-                })
-
                 exit_msg = (
                     f"✅ Trade closed: ${symbol}\n"
                     f"Entry: ${entry_price:.6f} → Exit: ${exit_price:.6f}\n"
@@ -147,7 +138,7 @@ def monitor_trade(ca, symbol, entry_price, amount_in_lamports, app: Application)
                 break
 
         except Exception:
-            pass
+            pass  # silent fail, just retry
 
         time.sleep(CHECK_INTERVAL)
 
@@ -183,8 +174,10 @@ def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
+    # Run Telegram bot in a thread
     threading.Thread(target=lambda: app.run_polling(timeout=10, poll_interval=2), daemon=True).start()
 
+    # Dummy Flask server for Render healthcheck
     server = Flask(__name__)
 
     @server.route("/")
