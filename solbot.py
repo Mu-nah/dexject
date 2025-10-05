@@ -1,5 +1,6 @@
 import os, re, json, requests, time, threading
 from dotenv import load_dotenv
+from flask import Flask
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 from solana.rpc.api import Client as SolanaClient
@@ -167,9 +168,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     lamports = int(TRADE_SOL_AMOUNT * 1e9)
     txid, msg = jupiter_swap(SOL_MINT, ca, lamports, symbol, "BUY")
-    await update.message.reply_text(
-        f"🚀 Trade started: ${symbol}\nCA: {ca}\nAmount: {TRADE_SOL_AMOUNT} SOL\n{msg}"
-    )
+    await update.message.reply_text(msg)
 
     if txid:
         try:
@@ -181,45 +180,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 daemon=True
             ).start()
         except Exception as e:
-            await update.message.reply_text(f"⚠️ Could not fetch entry price for {symbol}: {e}")
-
-# --- Daily summary ---
-async def send_daily_summary(app: Application):
-    global total_pnl_sol, win_count, loss_count, trade_logs
-    sol_balance = get_wallet_balance()
-    summary_msg = (
-        f"📊 Daily Summary\n"
-        f"Wallet Balance: {sol_balance:.6f} SOL\n"
-        f"Trades: {len(trade_logs)}\n"
-        f"Wins: {win_count} | Losses: {loss_count}\n"
-        f"Total PnL: {total_pnl_sol:.6f} SOL"
-    )
-    await app.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=summary_msg)
-    # Reset for next day
-    trade_logs = []
-    total_pnl_sol = 0.0
-    win_count = 0
-    loss_count = 0
-
-# --- Scheduler ---
-def schedule_daily(app: Application):
-    async def job():
-        await send_daily_summary(app)
-
-    while True:
-        now = datetime.now(timezone.utc) + timedelta(hours=1)  # WAT
-        if now.hour == 0 and now.minute == 0:
-            app.create_task(job())
-            time.sleep(60)
-        time.sleep(30)
+            await update.message.reply_text(f"Could not fetch entry price for {symbol}: {e}")
 
 # --- Main ---
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    threading.Thread(target=schedule_daily, args=(app,), daemon=True).start()
-    print("🚀 Trading bot with TP/SL/Trailing and Daily PnL running...")
-    app.run_polling(timeout=10, poll_interval=2, allowed_updates=Update.ALL_TYPES)
+
+    # Run Telegram bot in a thread
+    threading.Thread(target=lambda: app.run_polling(timeout=10, poll_interval=2), daemon=True).start()
+
+    # Dummy Flask server for Render healthcheck
+    server = Flask(__name__)
+
+    @server.route("/")
+    def home():
+        return "Bot is running!", 200
+
+    port = int(os.getenv("PORT", 5000))
+    server.run(host="0.0.0.0", port=port)
 
 if __name__ == "__main__":
     main()
