@@ -20,10 +20,10 @@ SOLANA_KEYPAIR_JSON_PATH = os.getenv("SOLANA_KEYPAIR_JSON_PATH")
 TRADE_SOL_AMOUNT = float(os.getenv("TRADE_SOL_AMOUNT", "0.01"))
 
 # TP/SL configs
-TP_PCT = float(os.getenv("TAKE_PROFIT_PCT", "50"))   # e.g. 50% gain
-SL_PCT = float(os.getenv("STOP_LOSS_PCT", "5"))      # 5% stop loss
+TP_PCT = float(os.getenv("TAKE_PROFIT_PCT", "50"))
+SL_PCT = float(os.getenv("STOP_LOSS_PCT", "5"))
 CHECK_INTERVAL = int(os.getenv("PRICE_CHECK_INTERVAL", "30"))
-TRAILING_SL_PCT = float(os.getenv("TRAILING_STOP_PCT", "10"))  # 10% trailing stop
+TRAILING_SL_PCT = float(os.getenv("TRAILING_STOP_PCT", "10"))
 TRADE_TIMEOUT = 300  # 5 minutes
 
 SOL_MINT = "So11111111111111111111111111111111111111112"
@@ -32,10 +32,10 @@ JUPITER_SWAP_API = "https://quote-api.jup.ag/v6/swap"
 DEXSCREENER_TOKEN = "https://api.dexscreener.com/latest/dex/tokens/"
 
 # --- Regex ---
-CA_REGEX = re.compile(r"(?:CA|Contract)[:\s>]*([A-Za-z0-9]{32,48})", re.IGNORECASE)
+CA_REGEX = re.compile(r"(?:CA|Contract)[:\s>]*([1-9A-HJ-NP-Za-km-z]{32,44})(?:pump)?", re.IGNORECASE)
 SYMBOL_REGEX = re.compile(r"\$([A-Za-z0-9_-]{1,20})")
 
-# --- Globals for trade tracking ---
+# --- Globals ---
 trade_logs = []
 total_pnl_sol = 0.0
 win_count = 0
@@ -146,8 +146,8 @@ def monitor_trade(ca, symbol, entry_price, amount_in_lamports, app: Application)
                 app.create_task(app.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=exit_msg))
                 break
 
-        except Exception as e:
-            print("Price check error:", e)
+        except Exception:
+            pass
 
         time.sleep(CHECK_INTERVAL)
 
@@ -159,11 +159,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not ca_match:
         return
 
-    ca = ca_match.group(1)
-    if ca.endswith("pump"):
-        ca = ca[:-4]
-    ca = ca.strip()
-
+    ca = ca_match.group(1).strip()
     symbol = sym_match.group(1).upper() if sym_match else "UNKNOWN"
 
     lamports = int(TRADE_SOL_AMOUNT * 1e9)
@@ -187,10 +183,8 @@ def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    # Run Telegram bot in a thread
     threading.Thread(target=lambda: app.run_polling(timeout=10, poll_interval=2), daemon=True).start()
 
-    # Dummy Flask server for Render healthcheck
     server = Flask(__name__)
 
     @server.route("/")
