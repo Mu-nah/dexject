@@ -4,3 +4,4 @@ solders==0.23.0
 base58
 requests
 python-dotenv
+flask
