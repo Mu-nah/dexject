@@ -1,4 +1,4 @@
-import os, re, json, requests, time, threading
+import os, re, json, requests, time, threading, base64
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
@@ -6,7 +6,6 @@ from solana.rpc.api import Client as SolanaClient
 from solana.rpc.types import TxOpts
 from solders.keypair import Keypair
 from solders.transaction import Transaction
-from base58 import b58decode
 from datetime import datetime, timedelta, timezone
 from flask import Flask, jsonify
 
@@ -60,33 +59,54 @@ def get_wallet_balance():
     except Exception:
         return 0.0
 
+
+# --- FIXED Jupiter Swap ---
 def jupiter_swap(input_mint, output_mint, amount, symbol, action="BUY"):
     try:
+        print(f"[Jupiter] Attempting {action} {symbol}: {input_mint} -> {output_mint} | {amount} lamports")
         params = {
             "inputMint": input_mint,
             "outputMint": output_mint,
             "amount": int(amount),
             "slippageBps": 200
         }
-        route = requests.get(JUPITER_QUOTE_API, params=params, timeout=10).json()
-        if "data" not in route or not route["data"]:
-            return None, f"No route for {symbol} {action}"
+
+        # Retry route fetch a few times in case Jupiter has no liquidity
+        route = None
+        for _ in range(3):
+            resp = requests.get(JUPITER_QUOTE_API, params=params, timeout=10).json()
+            if resp.get("data"):
+                route = resp["data"][0]
+                break
+            time.sleep(2)
+
+        if not route:
+            return None, f"No route found for {symbol} {action}"
 
         swap_req = {
-            "route": route["data"][0],
+            "route": route,
             "userPublicKey": str(keypair.pubkey()),
             "wrapUnwrapSOL": True
         }
+
         swap_tx = requests.post(JUPITER_SWAP_API, json=swap_req, timeout=10).json()
         if "swapTransaction" not in swap_tx:
-            return None, f"Swap tx error {swap_tx}"
+            return None, f"Swap transaction error: {swap_tx}"
 
-        tx = Transaction.from_bytes(b58decode(swap_tx["swapTransaction"]))
+        # Correct decoding: Jupiter returns base64, not base58
+        raw_tx = base64.b64decode(swap_tx["swapTransaction"])
+        tx = Transaction.deserialize(raw_tx)
+
         resp = sol_client.send_transaction(tx, keypair, opts=TxOpts(skip_preflight=True))
-        return resp["result"], f"{action} {symbol} | Tx: {resp['result']}"
+        print(f"[Jupiter] {action} {symbol} TxID: {resp.get('result')}")
+        return resp.get("result"), f"{action} {symbol} | Tx: {resp.get('result')}"
+
     except Exception as e:
+        print(f"[Error] Jupiter swap failed for {symbol}: {str(e)}")
         return None, f"{action} failed {symbol}: {str(e)}"
 
+
+# --- Monitor trade and exit conditions ---
 async def monitor_trade(app_obj, ca, symbol, entry_price, amount_in_lamports):
     global total_pnl_sol, win_count, loss_count
     peak_price = entry_price
@@ -108,13 +128,13 @@ async def monitor_trade(app_obj, ca, symbol, entry_price, amount_in_lamports):
 
             reason = None
             if change >= TP_PCT:
-                reason = f" TP hit {symbol} +{change:.1f}%"
+                reason = f"TP hit {symbol} +{change:.1f}%"
             elif change <= -SL_PCT:
-                reason = f" SL hit {symbol} {change:.1f}%"
+                reason = f"SL hit {symbol} {change:.1f}%"
             elif price <= peak_price * (1 - TRAILING_SL_PCT / 100):
-                reason = f" Trailing SL hit {symbol}"
+                reason = f"Trailing SL hit {symbol}"
             elif time.time() - start_time >= TRADE_TIMEOUT:
-                reason = f" Timeout hit, selling {symbol}"
+                reason = f"Timeout hit, selling {symbol}"
 
             if reason:
                 txid, msg = jupiter_swap(ca, SOL_MINT, amount_in_lamports, symbol, "SELL")
@@ -122,8 +142,11 @@ async def monitor_trade(app_obj, ca, symbol, entry_price, amount_in_lamports):
                 pnl_pct = (exit_price - entry_price) / entry_price * 100
                 profit_in_sol = TRADE_SOL_AMOUNT * pnl_pct / 100
                 total_pnl_sol += profit_in_sol
-                if pnl_pct > 0: win_count += 1
-                else: loss_count += 1
+
+                if pnl_pct > 0:
+                    win_count += 1
+                else:
+                    loss_count += 1
 
                 trade_logs.append({
                     "symbol": symbol,
@@ -138,9 +161,13 @@ async def monitor_trade(app_obj, ca, symbol, entry_price, amount_in_lamports):
                 sol_bal = get_wallet_balance()
                 await app_obj.bot.send_message(
                     chat_id=TELEGRAM_CHAT_ID,
-                    text=f" Trade closed: ${symbol}\nEntry: ${entry_price:.6f} → Exit: ${exit_price:.6f}\n"
-                         f"PnL: {pnl_pct:+.2f}% | {profit_in_sol:+.6f} SOL\n"
-                         f"Reason: {reason}\nWallet: {sol_bal:.6f} SOL"
+                    text=(
+                        f"✅ Trade closed: ${symbol}\n"
+                        f"Entry: ${entry_price:.6f} → Exit: ${exit_price:.6f}\n"
+                        f"PnL: {pnl_pct:+.2f}% | {profit_in_sol:+.6f} SOL\n"
+                        f"Reason: {reason}\n"
+                        f"Wallet: {sol_bal:.6f} SOL"
+                    )
                 )
                 break
 
@@ -149,11 +176,14 @@ async def monitor_trade(app_obj, ca, symbol, entry_price, amount_in_lamports):
 
         time.sleep(CHECK_INTERVAL)
 
+
+# --- Handle Telegram messages ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     ca_match = CA_REGEX.search(text)
     sym_match = SYMBOL_REGEX.search(text)
-    if not ca_match: return
+    if not ca_match:
+        return
 
     ca = ca_match.group(1)
     symbol = sym_match.group(1).upper() if sym_match else "UNKNOWN"
@@ -175,6 +205,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             await update.message.reply_text(f"Could not fetch entry price for {symbol}: {e}")
 
+
+# --- Daily summary ---
 async def send_daily_summary(app_obj: Application):
     global total_pnl_sol, win_count, loss_count, trade_logs
     sol_balance = get_wallet_balance()
@@ -188,8 +220,10 @@ async def send_daily_summary(app_obj: Application):
     await app_obj.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=summary_msg)
     trade_logs, total_pnl_sol, win_count, loss_count = [], 0.0, 0, 0
 
+
 def schedule_daily(app_obj: Application):
-    async def job(): await send_daily_summary(app_obj)
+    async def job():
+        await send_daily_summary(app_obj)
     while True:
         now = datetime.now(timezone.utc) + timedelta(hours=1)
         if now.hour == 0 and now.minute == 0:
@@ -197,11 +231,15 @@ def schedule_daily(app_obj: Application):
             time.sleep(60)
         time.sleep(30)
 
+
+# --- Start Telegram bot ---
 def start_bot():
     bot_app = Application.builder().token(TELEGRAM_TOKEN).build()
     bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     threading.Thread(target=schedule_daily, args=(bot_app,), daemon=True).start()
-    print(" Trading bot with Flask and Telegram handler running...")
+    print("🚀 Trading bot with Flask and Telegram handler running...")
     bot_app.run_polling(timeout=10, poll_interval=2, allowed_updates=Update.ALL_TYPES)
 
+
+# --- Run Flask + Telegram bot concurrently ---
 threading.Thread(target=start_bot, daemon=True).start()
