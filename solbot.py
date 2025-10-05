@@ -32,7 +32,7 @@ JUPITER_SWAP_API = "https://quote-api.jup.ag/v6/swap"
 DEXSCREENER_TOKEN = "https://api.dexscreener.com/latest/dex/tokens/"
 
 # --- Regex ---
-CA_REGEX = re.compile(r"(?:CA|Contract)[:>\s]*([A-Za-z0-9]{32,48})")
+CA_REGEX = re.compile(r"(?:CA|Contract)[:\s>]*([A-Za-z0-9]{32,48})", re.IGNORECASE)
 SYMBOL_REGEX = re.compile(r"\$([A-Za-z0-9_-]{1,20})")
 
 # --- Globals for trade tracking ---
