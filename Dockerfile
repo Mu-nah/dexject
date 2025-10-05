@@ -1,36 +1,26 @@
-# Use official Python image
-
+# Use Python base image
 FROM python:3.12-slim
 
-# Set work directory
-
+# Set working directory
 WORKDIR /app
 
 # Install system dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    libssl-dev \
+    pkg-config \
+    libudev-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-RUN apt-get update && apt-get install -y 
-build-essential 
-libssl-dev 
-pkg-config 
-curl 
-&& rm -rf /var/lib/apt/lists/*
-
-# Copy requirements first for caching
-
+# Copy requirements and install
 COPY requirements.txt .
-
-# Install Python dependencies
-
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy bot code
-
+# Copy project files
 COPY . .
 
-# Set env vars (can also be provided by Render dashboard)
-
+# Set environment variables (can also set them in Render dashboard)
 ENV PYTHONUNBUFFERED=1
 
-# Start the bot
-
+# Run bot
 CMD ["python", "solbot.py"]
