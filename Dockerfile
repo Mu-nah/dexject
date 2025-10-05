@@ -1,26 +1,31 @@
-# Use Python base image
-FROM python:3.12-slim
+# Use official slim Python
+FROM python:3.11-slim
 
-# Set working directory
-WORKDIR /app
-
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    libssl-dev \
-    pkg-config \
-    libudev-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy requirements and install
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy project files
-COPY . .
-
-# Set environment variables (can also set them in Render dashboard)
+# set environment
+ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-# Run bot
-CMD ["python", "solbot.py"]
+WORKDIR /app
+
+# system deps for some crypto libs (solders/solana may need build deps)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libssl-dev \
+    libffi-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# copy requirements first for layer caching
+COPY requirements.txt .
+
+# install
+RUN pip install --upgrade pip
+RUN pip install --no-cache-dir -r requirements.txt
+
+# copy app
+COPY . /app
+
+# expose port used by Render (use $PORT at runtime)
+EXPOSE 8080
+
+# Use a single worker to avoid duplicate bot instances; Render sets $PORT
+CMD ["sh", "-c", "gunicorn 'app:flask_app' --bind 0.0.0.0:${PORT:-8080} --workers 1 --threads 4"]
