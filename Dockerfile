@@ -1,11 +1,22 @@
-FROM python:3.11-slim
+# Use lightweight Python image
+FROM python:3.12-slim
 
+# Install system deps
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    libssl-dev \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set workdir
 WORKDIR /app
 
-COPY . /app
-
+# Install Python deps
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-EXPOSE 10000
+# Copy bot code
+COPY . .
 
-CMD ["gunicorn", "--bind", "0.0.0.0:10000", "--workers", "2", "--threads", "4", "solbot:app"]
+# Run bot
+CMD ["python", "solbot.py"]
