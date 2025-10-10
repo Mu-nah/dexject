@@ -17,4 +17,4 @@ COPY . .
 EXPOSE 5000
 
 # Command to run the bot
-CMD ["python", "solbotA.py"]
+CMD ["python", "solbot.py"]
