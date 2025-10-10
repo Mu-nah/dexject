@@ -1,22 +1,20 @@
-# Use lightweight Python image
+# Use official Python image
 FROM python:3.12-slim
 
-# Install system deps
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    libssl-dev \
-    pkg-config \
-    && rm -rf /var/lib/apt/lists/*
-
-# Set workdir
+# Set working directory
 WORKDIR /app
 
-# Install Python deps
+# Copy requirements first for caching
 COPY requirements.txt .
+
+# Install dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy bot code
+# Copy the bot code
 COPY . .
 
-# Run bot
-CMD ["python", "solbot.py"]
+# Expose the port (Render uses $PORT env variable)
+EXPOSE 5000
+
+# Command to run the bot
+CMD ["python", "solbotA.py"]
