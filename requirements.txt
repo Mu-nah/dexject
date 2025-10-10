@@ -1,13 +1,5 @@
-python-telegram-bot==20.7
-solana==0.36.0
-solders>=0.23.0,<0.24.0
 requests
 python-dotenv
+solana
+solders
 flask
-httpx==0.25.2
-gunicorn
-base58
-
-
-
-
