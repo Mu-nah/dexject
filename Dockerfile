@@ -1,20 +1,27 @@
-# Use official Python image
-FROM python:3.12-slim
+# === Base image ===
+FROM python:3.11-slim
 
-# Set working directory
+# === Environment setup ===
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+# === Working directory ===
 WORKDIR /app
 
-# Copy requirements first for caching
-COPY requirements.txt .
+# === Install system dependencies ===
+RUN apt-get update && apt-get install -y \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install dependencies
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy the bot code
+# === Copy project files ===
 COPY . .
 
-# Expose the port (Render uses $PORT env variable)
+# === Install Python dependencies ===
+RUN pip install --no-cache-dir --upgrade pip
+RUN pip install --no-cache-dir -r requirements.txt
+
+# === Expose port for Render ===
 EXPOSE 5000
 
-# Command to run the bot
+# === Run the bot with Flask server ===
 CMD ["python", "solbot.py"]
