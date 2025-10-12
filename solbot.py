@@ -1,6 +1,5 @@
 import os
 import time
-import threading
 import requests
 from datetime import datetime, timezone
 from solana.rpc.api import Client
@@ -8,154 +7,157 @@ from solders.pubkey import Pubkey
 from dotenv import load_dotenv
 from flask import Flask
 
+# === ENV ===
 load_dotenv()
-
-# === CONFIG ===
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
+# === CONFIG ===
 RPC_URLS = [
     "https://api.mainnet-beta.solana.com",
     "https://rpc.ankr.com/solana",
     "https://solana-api.projectserum.com",
     "https://solana.public-rpc.com",
 ]
-TOKEN_LIST_URL = "https://raw.githubusercontent.com/solana-labs/token-list/main/src/tokens/solana.tokenlist.json"
-
+DEXSCREENER_API = "https://api.dexscreener.com/latest/dex/tokens/"
+GRADUATES_FEED = "https://api.pump.fun/graduate/recent"
+CHECK_INTERVAL = 30  # seconds (real-time watch)
 SEEN = set()
 
+# === FLASK KEEPALIVE ===
 app = Flask(__name__)
 
-# === TELEGRAM ALERT ===
-def send_telegram_message(text: str):
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        data = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"}
-        requests.post(url, data=data, timeout=10)
-    except Exception as e:
-        print("Telegram error:", e)
+@app.route("/")
+def home():
+    return "✅ Raydium Graduate Token Analyzer is running!"
 
-# === ON-CHAIN DATA ===
-def get_token_data(mint_address: str):
+# === TELEGRAM ===
+def send_telegram(text: str):
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            data={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "Markdown"},
+            timeout=10,
+        )
+    except Exception:
+        pass
+
+
+# === ONCHAIN ===
+def get_token_data(ca):
     for rpc in RPC_URLS:
         try:
             client = Client(rpc)
-            mint = Pubkey.from_string(mint_address)
-
-            supply_resp = client.get_token_supply(mint)
-            supply_value = float(supply_resp.value.ui_amount) if hasattr(supply_resp, "value") else 0.0
-
-            largest_resp = client.get_token_largest_accounts(mint)
-            accounts = getattr(largest_resp, "value", [])
-            if not accounts:
-                continue
-
-            top10_balances = [float(a.ui_amount) for a in accounts[:10] if hasattr(a, "ui_amount")]
-            top10_sum = sum(top10_balances)
-            top10pct = (top10_sum / supply_value * 100) if supply_value > 0 else 0.0
-            holders = len(accounts)
-
-            return supply_value, holders, top10pct
-        except Exception as e:
-            print(f"On-chain fetch error from {rpc}: {e}")
+            mint = Pubkey.from_string(ca)
+            supply = client.get_token_supply(mint).value.ui_amount
+            largest = client.get_token_largest_accounts(mint).value
+            top10_balances = [float(a.ui_amount) for a in largest[:10]]
+            top10pct = sum(top10_balances) / supply * 100 if supply > 0 else 0.0
+            holders = len(largest)
+            return supply, holders, top10pct
+        except Exception:
             time.sleep(1)
+            continue
     return 0.0, 0, 0.0
 
-# === DEXSCREENER PER TOKEN ===
-def get_token_market_data(mint_address: str):
-    try:
-        url = f"https://api.dexscreener.com/latest/dex/tokens/{mint_address}"
-        resp = requests.get(url, timeout=10).json()
-        pairs = resp.get("pairs", [])
-        if not pairs:
-            return 0.0, 0.0, 0.0, "", "N/A", "N/A"
-        pair = max(pairs, key=lambda x: x.get("volume", {}).get("h24", 0))
-        fdv = float(pair.get("fdv", 0) or 0)
-        volume24h = float(pair.get("volume", {}).get("h24", 0) or 0)
-        liquidityUsd = float(pair.get("liquidity", {}).get("usd", 0) or 0)
-        link = pair.get("url", "")
-        socials = pair.get("info", {}).get("socials", [])
-        twitter = next((s["url"] for s in socials if s["type"] == "twitter"), "N/A")
-        telegram = next((s["url"] for s in socials if s["type"] == "telegram"), "N/A")
-        return fdv, volume24h, liquidityUsd, link, twitter, telegram
-    except Exception as e:
-        print(f"DexScreener fetch error: {e}")
-        return 0.0, 0.0, 0.0, "", "N/A", "N/A"
 
-# === ALERT FORMAT ===
-def format_alert(symbol, ca, fdv, volume, liquidity, top10pct, holders, pair_age, link, twitter, telegram):
-    text = (
-        f"🔥 *New Raydium Graduate Detected:* ${symbol}\n\n"
+# === DEXSCREENER ===
+def get_dex_data(ca):
+    try:
+        r = requests.get(f"{DEXSCREENER_API}{ca}", timeout=10).json()
+        pairs = r.get("pairs", [])
+        if not pairs:
+            return None
+        pair = max(pairs, key=lambda x: x.get("volume", {}).get("h24", 0))
+        return {
+            "symbol": pair.get("baseToken", {}).get("symbol", ""),
+            "fdv": float(pair.get("fdv", 0) or 0),
+            "volume": float(pair.get("volume", {}).get("h24", 0) or 0),
+            "liquidity": float(pair.get("liquidity", {}).get("usd", 0) or 0),
+            "url": pair.get("url", ""),
+            "dex": pair.get("dexId", "unknown"),
+        }
+    except Exception:
+        return None
+
+
+# === ALERT ===
+def format_alert(symbol, ca, fdv, volume, liquidity, top10, holders, mins, dex, link):
+    return (
+        f"🔥 *New Raydium Graduate Detected!*\n\n"
+        f"💎 *Token:* ${symbol}\n"
         f"💰 *Market Cap:* ${fdv:,.0f}\n"
         f"📊 *Volume (24h):* ${volume:,.0f}\n"
         f"💧 *Liquidity:* ${liquidity:,.0f}\n"
-        f"🏦 *Top 10 Wallets:* {top10pct:.2f}%\n"
+        f"🏦 *Top 10 Wallets:* {top10:.2f}%\n"
         f"👥 *Holders:* {holders}\n"
-        f"🕒 *Graduated:* {pair_age:.0f} minutes ago\n"
-        f"🔗 [DexScreener]({link})\n"
-        f"🐦 [Twitter]({twitter}) | 💬 [Telegram]({telegram})\n"
+        f"🕒 *Graduated:* {mins:.0f} mins ago\n"
+        f"🧩 *DEX:* {dex.capitalize()}\n\n"
+        f"🔗 [DexScreener Link]({link})\n"
         f"🧾 *CA:* `{ca}`"
     )
-    return text
 
-# === FETCH RECENT TOKENS ===
-def get_recent_tokens():
+
+# === FETCH GRADUATES ===
+def get_recent_graduates():
     try:
-        r = requests.get(TOKEN_LIST_URL, timeout=10).json()
-        tokens = r.get("tokens", [])
+        r = requests.get(GRADUATES_FEED, timeout=15)
+        if r.status_code != 200:
+            return []
+        grads = r.json()
         now = datetime.now(timezone.utc)
-        recent_tokens = []
-        for t in tokens:
-            ca = t.get("address")
-            symbol = t.get("symbol")
-            ts = t.get("extensions", {}).get("listedAt")
-            if not ca or not ts or ca in SEEN:
+        results = []
+
+        for g in grads:
+            ca = g.get("mint")
+            if not ca or ca in SEEN:
                 continue
-            age = (now - datetime.fromtimestamp(ts, timezone.utc)).total_seconds() / 60
-            if age > 59:
+            ts = g.get("timestamp", 0)
+            age_mins = (now - datetime.fromtimestamp(ts, timezone.utc)).total_seconds() / 60
+            if age_mins > 60:
                 continue
             SEEN.add(ca)
-            recent_tokens.append({"ca": ca, "symbol": symbol, "age": age})
-        return recent_tokens
-    except Exception as e:
-        print(f"Error fetching recent tokens: {e}")
+            results.append({"ca": ca, "age": age_mins})
+        return results
+    except Exception:
         return []
 
-# === MAIN WORKER THREAD ===
-def worker():
+
+# === MAIN LOOP ===
+def monitor_graduates():
+    send_telegram("🚀 *Raydium Graduate Analyzer Started...*")
     while True:
-        try:
-            recent_tokens = get_recent_tokens()
-            for t in recent_tokens:
-                ca = t["ca"]
-                symbol = t["symbol"]
-                age = t["age"]
+        grads = get_recent_graduates()
+        for g in grads:
+            ca, age = g["ca"], g["age"]
+            dex_data = get_dex_data(ca)
+            if not dex_data:
+                continue
 
-                supply, holders, top10pct = get_token_data(ca)
-                fdv, volume, liquidity, link, twitter, telegram = get_token_market_data(ca)
+            fdv, volume = dex_data["fdv"], dex_data["volume"]
+            if not (80000 <= fdv <= 300000 and volume >= 200000):
+                continue
 
-                # --- Filters ---
-                if not (80_000 <= fdv <= 300_000):
-                    continue
-                if volume < 200_000:
-                    continue
-                if top10pct > 25:
-                    continue
-                if holders < 250:
-                    continue
+            supply, holders, top10 = get_token_data(ca)
+            if holders < 250 or top10 > 25:
+                continue
 
-                msg = format_alert(symbol, ca, fdv, volume, liquidity, top10pct, holders, age, link, twitter, telegram)
-                send_telegram_message(msg)
+            alert = format_alert(
+                dex_data["symbol"], ca, fdv, volume,
+                dex_data["liquidity"], top10, holders, age,
+                dex_data["dex"], dex_data["url"]
+            )
+            send_telegram(alert)
 
-        except Exception as e:
-            print(f"Worker loop error: {e}")
-        time.sleep(60)
+        time.sleep(CHECK_INTERVAL)
 
-# === FLASK ENDPOINT ===
-@app.route("/")
-def home():
-    return "🚀 Raydium Graduate Token Watcher is running!"
 
+# === ENTRYPOINT ===
 if __name__ == "__main__":
-    # Start background worker
-    threading.Thread(target=worker, daemon=True).start()
+    import threading
+
+    # Run main monitor loop in background thread
+    threading.Thread(target=monitor_graduates, daemon=True).start()
+
+    # Flask web app to keep container alive
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
